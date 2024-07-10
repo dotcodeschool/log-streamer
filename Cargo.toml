@@ -1,0 +1,13 @@
+[package]
+name = "log-streamer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+env_logger = "0.11.3"
+log = "0.4.22"
+mobc = "0.8.4"
+mobc-redis = "0.8.2"
+redis = { version = "0.25.4", features = ["aio", "tokio-comp"] }
+tokio = { version = "1", features = ["full"] }
+tokio-stream = {version = "0.1.15", features = ["net"]}
