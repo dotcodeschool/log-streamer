@@ -1,12 +1,12 @@
+use env_logger::init as env_logger_init;
+use log::{error, info};
+use mobc::Pool;
+use mobc_redis::{redis, RedisConnectionManager};
+use redis::{AsyncCommands, RedisError};
+use tokio::io::{self, AsyncReadExt};
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
 use tokio_stream::StreamExt;
-use tokio::io::{self, AsyncReadExt};
-use redis::{AsyncCommands, RedisError};
-use mobc::{Pool};
-use mobc_redis::{RedisConnectionManager, redis};
-use log::{info, error};
-use env_logger::init as env_logger_init;
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
@@ -16,8 +16,10 @@ async fn main() -> io::Result<()> {
     let mut incoming = TcpListenerStream::new(listener);
     info!("Listening on: 0.0.0.0:8080");
 
-    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
-    let client = redis::Client::open(redis_url).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
+    let client =
+        redis::Client::open(redis_url).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     let manager = RedisConnectionManager::new(client);
     let pool = Pool::builder().build(manager);
 
@@ -29,11 +31,16 @@ async fn main() -> io::Result<()> {
     Ok(())
 }
 
-async fn handle_connection(mut socket: tokio::net::TcpStream, pool: Pool<RedisConnectionManager>) -> io::Result<()> {
+async fn handle_connection(
+    mut socket: tokio::net::TcpStream,
+    pool: Pool<RedisConnectionManager>,
+) -> io::Result<()> {
     let mut buf = vec![0; 1024]; // Dynamic buffer with initial capacity
     loop {
         let n = socket.read(&mut buf).await?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
 
         let message = String::from_utf8_lossy(&buf[..n]).to_string();
         info!("Received: {}", message);
@@ -46,7 +53,15 @@ async fn handle_connection(mut socket: tokio::net::TcpStream, pool: Pool<RedisCo
     Ok(())
 }
 
-async fn add_to_redis(message: &str, pool: &Pool<RedisConnectionManager>) -> Result<(), RedisError> {
-    let mut conn = pool.get().await.map_err(|e| RedisError::from(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+async fn add_to_redis(
+    message: &str,
+    pool: &Pool<RedisConnectionManager>,
+) -> Result<(), RedisError> {
+    let mut conn = pool.get().await.map_err(|e| {
+        RedisError::from(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            e.to_string(),
+        ))
+    })?;
     conn.xadd("log_stream", "*", &[("msg", message)]).await
 }
