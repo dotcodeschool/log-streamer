@@ -1,19 +1,20 @@
 use env_logger::init as env_logger_init;
+use futures_util::sink::SinkExt;
+use futures_util::stream::StreamExt;
 use log::{error, info};
 use mobc::Pool;
 use mobc_redis::{redis, RedisConnectionManager};
 use redis::{AsyncCommands, RedisError};
-use tokio::io::{self, AsyncReadExt};
-use tokio::net::TcpListener;
-use tokio_stream::wrappers::TcpListenerStream;
-use tokio_stream::StreamExt;
+use tokio::io;
+use tokio::net::{TcpListener, TcpStream};
+use tokio_tungstenite::accept_async;
+use tokio_tungstenite::tungstenite;
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
     env_logger_init();
 
     let listener = TcpListener::bind("0.0.0.0:8080").await?;
-    let mut incoming = TcpListenerStream::new(listener);
     info!("Listening on: 0.0.0.0:8080");
 
     let redis_url =
@@ -23,32 +24,45 @@ async fn main() -> io::Result<()> {
     let manager = RedisConnectionManager::new(client);
     let pool = Pool::builder().build(manager);
 
-    while let Some(Ok(socket)) = incoming.next().await {
+    while let Ok((stream, _)) = listener.accept().await {
         let pool = pool.clone();
-        tokio::spawn(handle_connection(socket, pool));
+        tokio::spawn(async move {
+            if let Err(e) = handle_connection(stream, pool).await {
+                error!("Error in connection handler: {}", e);
+            }
+        });
     }
 
     Ok(())
 }
 
 async fn handle_connection(
-    mut socket: tokio::net::TcpStream,
+    stream: TcpStream,
     pool: Pool<RedisConnectionManager>,
 ) -> io::Result<()> {
-    let mut buf = vec![0; 1024]; // Dynamic buffer with initial capacity
-    loop {
-        let n = socket.read(&mut buf).await?;
-        if n == 0 {
-            break;
-        }
-
-        let message = String::from_utf8_lossy(&buf[..n]).to_string();
-        info!("Received: {}", message);
-
-        match add_to_redis(&message, &pool).await {
-            Ok(_) => info!("Pushed to Redis"),
-            Err(e) => error!("Failed to add to Redis: {}", e),
-        }
+    let ws_stream = accept_async(stream).await.map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("WebSocket handshake failed: {}", e),
+        )
+    })?;
+    let (mut write, mut read) = ws_stream.split();
+    while let Some(msg) = read.next().await {
+        let msg = msg.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let msg = msg
+            .into_text()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        info!("Received message: {}", msg);
+        add_to_redis(&msg, &pool).await.map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("Error adding to redis: {}", e),
+            )
+        })?;
+        write
+            .send(tungstenite::Message::Text("Message received".to_string()))
+            .await
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     }
     Ok(())
 }
