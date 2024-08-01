@@ -61,11 +61,13 @@ async fn handle_connection(
                     format!("Error adding to redis: {}", e),
                 )
             })?;
+            write
+                .send(tungstenite::Message::Text("Message received".to_string()))
+                .await
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        } else {
+            info!("Skipped storing HTTP header");
         }
-        write
-            .send(tungstenite::Message::Text("Message received".to_string()))
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     }
     Ok(())
 }
