@@ -427,6 +427,7 @@ dependencies = [
  "mobc",
  "mobc-redis",
  "redis 0.25.4",
+ "regex",
  "tokio",
  "tokio-stream",
  "tokio-tungstenite",
