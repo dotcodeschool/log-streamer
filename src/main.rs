@@ -5,6 +5,7 @@ use log::{error, info};
 use mobc::Pool;
 use mobc_redis::{redis, RedisConnectionManager};
 use redis::{AsyncCommands, RedisError};
+use regex::Regex;
 use tokio::io;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::accept_async;
@@ -53,12 +54,14 @@ async fn handle_connection(
             .into_text()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         info!("Received message: {}", msg);
-        add_to_redis(&msg, &pool).await.map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("Error adding to redis: {}", e),
-            )
-        })?;
+        if !is_http_header(&msg) {
+            add_to_redis(&msg, &pool).await.map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Error adding to redis: {}", e),
+                )
+            })?;
+        }
         write
             .send(tungstenite::Message::Text("Message received".to_string()))
             .await
@@ -78,4 +81,10 @@ async fn add_to_redis(
         ))
     })?;
     conn.xadd("log_stream", "*", &[("msg", message)]).await
+}
+
+fn is_http_header(message: &str) -> bool {
+    // Regular expression to match HTTP headers
+    let re = Regex::new(r"(?i)^(GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH|TRACE|CONNECT) .* HTTP/\d\.\d\r\n(?:[^\r\n]+\r\n)*\r\n").unwrap();
+    re.is_match(message)
 }
