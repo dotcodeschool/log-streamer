@@ -6,10 +6,19 @@ use mobc::Pool;
 use mobc_redis::{redis, RedisConnectionManager};
 use redis::{AsyncCommands, RedisError};
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use tokio::io;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite;
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(tag = "event_type", rename_all = "lowercase")]
+enum ClientMessage {
+    Init { stream_id: String },
+    Log { bytes: String },
+    Disconnect,
+}
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
@@ -48,31 +57,63 @@ async fn handle_connection(
         )
     })?;
     let (mut write, mut read) = ws_stream.split();
+    let mut stream_id = String::new();
+
     while let Some(msg) = read.next().await {
         let msg = msg.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         let msg = msg
             .into_text()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         info!("Received message: {}", msg);
-        if !is_http_header(&msg) {
-            add_to_redis(&msg, &pool).await.map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("Error adding to redis: {}", e),
-                )
-            })?;
-            write
-                .send(tungstenite::Message::Text("Message received".to_string()))
-                .await
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        } else {
-            info!("Skipped storing HTTP header");
+
+        match serde_json::from_str::<ClientMessage>(&msg) {
+            Ok(ClientMessage::Init { stream_id: sid }) => {
+                info!("Init message received with stream_id: {}", sid);
+                stream_id = sid;
+            }
+            Ok(ClientMessage::Log { bytes }) => {
+                if stream_id.is_empty() {
+                    error!("Log message received before init");
+                    write
+                        .send(tungstenite::Message::Text("Error: No init".to_string()))
+                        .await
+                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                } else if is_http_header(&bytes) {
+                    info!("HTTP header detected, not logging");
+                } else {
+                    add_to_redis(&stream_id, "log", &bytes, &pool)
+                        .await
+                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                    write
+                        .send(tungstenite::Message::Text("OK".to_string()))
+                        .await
+                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                }
+            }
+            Ok(ClientMessage::Disconnect) => {
+                info!("Disconnect message received");
+                if !stream_id.is_empty() {
+                    add_to_redis(&stream_id, "disconnect", "", &pool)
+                        .await
+                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                }
+                break;
+            }
+            Err(e) => {
+                error!("Error parsing message: {}", e);
+                write
+                    .send(tungstenite::Message::Text("Error".to_string()))
+                    .await
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            }
         }
     }
     Ok(())
 }
 
 async fn add_to_redis(
+    stream_id: &str,
+    event_type: &str,
     message: &str,
     pool: &Pool<RedisConnectionManager>,
 ) -> Result<(), RedisError> {
@@ -82,7 +123,17 @@ async fn add_to_redis(
             e.to_string(),
         ))
     })?;
-    conn.xadd("log_stream", "*", &[("msg", message)]).await
+    if event_type == "log" {
+        conn.xadd(
+            stream_id,
+            "*",
+            &[("event_type", event_type), ("bytes", message)],
+        )
+        .await
+    } else {
+        conn.xadd(stream_id, "*", &[("event_type", event_type)])
+            .await
+    }
 }
 
 fn is_http_header(message: &str) -> bool {
