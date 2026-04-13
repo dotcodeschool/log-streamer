@@ -1,3 +1,12 @@
+> [!CAUTION]
+> **This repository has been archived and is no longer maintained.**
+> 
+> This log streaming service was part of an older architecture where test results were streamed to students via Redis and WebSocket. Dot Code School now uses a fully static pipeline with no backend services.
+> 
+> See [dotcodeschool/frontend](https://github.com/dotcodeschool/frontend) for the current platform.
+
+---
+
 # Dot Code School Log Streamer
 
 A Rust-based service that streams logs from Redis to connected clients via WebSocket.
